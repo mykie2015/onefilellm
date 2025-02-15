@@ -21,6 +21,20 @@ from rich.text import Text
 from rich.prompt import Prompt
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 import xml.etree.ElementTree as ET
+import logging
+from datetime import datetime
+import hashlib
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('debug.log'),
+        logging.StreamHandler()
+    ]
+)
 
 EXCLUDED_DIRS = ["dist", "node_modules", ".git", "__pycache__"]  # Add any other directories to exclude here
 
@@ -35,9 +49,10 @@ def safe_file_read(filepath, fallback_encoding='latin1'):
 nltk.download("stopwords", quiet=True)
 stop_words = set(stopwords.words("english"))
 
-TOKEN = os.getenv('GITHUB_TOKEN', 'default_token_here')
-if TOKEN == 'default_token_here':
-    raise EnvironmentError("GITHUB_TOKEN environment variable not set.")
+load_dotenv()  # Load environment variables from .env file
+TOKEN = os.getenv('GITHUB_TOKEN')
+if not TOKEN:
+    raise EnvironmentError("GITHUB_TOKEN not found in .env file. Please add it as: GITHUB_TOKEN=your_token_here")
 
 headers = {"Authorization": f"token {TOKEN}"}
 
@@ -167,34 +182,55 @@ def process_github_repo(repo_url):
     return "\n".join(repo_content)
 
 def process_local_folder(local_path):
+    logging.info(f"Starting process_local_folder with path: {local_path}")
+    
     def process_local_directory(local_path):
+        logging.info(f"Processing directory: {local_path}")
         content = [f'<source type="local_directory" path="{escape_xml(local_path)}">']
-        for root, dirs, files in os.walk(local_path):
-            # Exclude directories
-            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+        
+        try:
+            for root, dirs, files in os.walk(local_path):
+                logging.debug(f"Walking directory: {root}")
+                logging.debug(f"Found directories: {dirs}")
+                logging.debug(f"Found files: {files}")
+                
+                # Exclude directories
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+                logging.debug(f"After exclusion, processing directories: {dirs}")
 
-            for file in files:
-                if is_allowed_filetype(file):
-                    print(f"Processing {os.path.join(root, file)}...")
+                for file in files:
+                    if is_allowed_filetype(file):
+                        logging.info(f"Processing file: {os.path.join(root, file)}")
 
-                    file_path = os.path.join(root, file)
-                    relative_path = os.path.relpath(file_path, local_path)
-                    content.append(f'<file name="{escape_xml(relative_path)}">')
+                        try:
+                            file_path = os.path.join(root, file)
+                            relative_path = os.path.relpath(file_path, local_path)
+                            content.append(f'<file name="{escape_xml(relative_path)}">')
 
-                    if file.endswith(".ipynb"):
-                        content.append(escape_xml(process_ipynb_file(file_path)))
-                    else:
-                        with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
-                            content.append(escape_xml(f.read()))
+                            if file.endswith(".ipynb"):
+                                content.append(escape_xml(process_ipynb_file(file_path)))
+                            else:
+                                with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
+                                    content.append(escape_xml(f.read()))
 
-                    content.append('</file>')
+                            content.append('</file>')
+                        except Exception as e:
+                            logging.error(f"Error processing file {file}: {str(e)}")
+
+        except Exception as e:
+            logging.error(f"Error walking directory {local_path}: {str(e)}")
+            raise
 
         content.append('</source>')
         return '\n'.join(content)
 
-    formatted_content = process_local_directory(local_path)
-    print("All files processed.")
-    return formatted_content
+    try:
+        formatted_content = process_local_directory(local_path)
+        logging.info("All files processed successfully")
+        return formatted_content
+    except Exception as e:
+        logging.error(f"Fatal error in process_local_folder: {str(e)}")
+        raise
 
 def process_arxiv_pdf(arxiv_abs_url):
     pdf_url = arxiv_abs_url.replace("/abs/", "/pdf/") + ".pdf"
@@ -233,6 +269,8 @@ def extract_links(input_file, output_file):
             output.write(url + '\n')
 
 def fetch_youtube_transcript(url):
+    logging.info(f"Fetching transcript for: {url}")
+    
     def extract_video_id(url):
         pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
         match = re.search(pattern, url)
@@ -241,23 +279,46 @@ def fetch_youtube_transcript(url):
         return None
 
     video_id = extract_video_id(url)
+    logging.debug(f"Extracted video ID: {video_id}")
+
     if not video_id:
-        return f'<source type="youtube_transcript" url="{escape_xml(url)}">\n<error>Could not extract video ID from URL.</error>\n</source>'
+        return f'<source type="youtube_transcript" url="{escape_xml(url)}">\n<error>Invalid YouTube URL format</error>\n</source>'
 
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        formatter = TextFormatter()
-        transcript = formatter.format_transcript(transcript_list)
+        # Try to get all available transcripts first
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        logging.debug(f"Available transcripts: {transcript_list}")
+
+        # Try English first, fall back to auto-generated
+        try:
+            transcript = transcript_list.find_transcript(['en'])
+        except:
+            try:
+                transcript = transcript_list.find_generated_transcript(['en'])
+            except:
+                # Last resort: get the first available transcript
+                transcript = transcript_list.find_manually_created_transcript()
+
+        # Get the actual transcript data
+        transcript_data = transcript.fetch()
         
-        formatted_text = f'<source type="youtube_transcript" url="{escape_xml(url)}">\n'
-        formatted_text += '<transcript>\n'
-        formatted_text += escape_xml(transcript)
-        formatted_text += '\n</transcript>\n'
-        formatted_text += '</source>'
+        # Format transcript text
+        formatted_text = []
+        for entry in transcript_data:
+            formatted_text.append(f"{entry['text']}")
         
-        return formatted_text
+        transcript_content = ' '.join(formatted_text)
+        
+        return f'''<source type="youtube_transcript" url="{escape_xml(url)}">
+<transcript>
+{escape_xml(transcript_content)}
+</transcript>
+</source>'''
+
     except Exception as e:
-        return f'<source type="youtube_transcript" url="{escape_xml(url)}">\n<error>{escape_xml(str(e))}</error>\n</source>'
+        error_message = f"Failed to fetch transcript: {str(e)}"
+        logging.error(error_message)
+        return f'<source type="youtube_transcript" url="{escape_xml(url)}">\n<error>{escape_xml(error_message)}</error>\n</source>'
 
 def preprocess_text(input_file, output_file):
     with open(input_file, "r", encoding="utf-8") as input_file:
@@ -641,7 +702,34 @@ def is_allowed_filetype(filename):
 
     return any(filename.endswith(ext) for ext in allowed_extensions)
 
+def create_output_folder(input_path):
+    """
+    Create a meaningful output folder name based on input path
+    """
+    # Create base outputs directory
+    outputs_dir = "outputs"
+    if not os.path.exists(outputs_dir):
+        os.makedirs(outputs_dir)
+    
+    # Create meaningful folder name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if os.path.isdir(input_path):
+        folder_name = os.path.basename(os.path.abspath(input_path))
+    else:
+        # For URLs, use domain name + path hash
+        parsed_url = urlparse(input_path)
+        domain = parsed_url.netloc.replace(".", "_")
+        path_hash = hashlib.md5(parsed_url.path.encode()).hexdigest()[:8]
+        folder_name = f"{domain}_{path_hash}"
+    
+    # Create final output path
+    output_folder = os.path.join(outputs_dir, f"{folder_name}_{timestamp}")
+    os.makedirs(output_folder)
+    
+    return output_folder
+
 def main():
+    logging.info("Starting main function")
     console = Console()
 
     intro_text = Text("\nInput Paths or URLs Processed:\n", style="dodger_blue1")
@@ -669,16 +757,21 @@ def main():
     )
     console.print(intro_panel)
 
+    logging.debug(f"System arguments: {sys.argv}")
+    
     if len(sys.argv) > 1:
-        input_path = sys.argv[1]
+        input_path = sys.argv[2] if sys.argv[1] == "--source" else sys.argv[1]
+        logging.info(f"Using command line argument path: {input_path}")
     else:
         input_path = Prompt.ask("\n[bold dodger_blue1]Enter the path or URL[/bold dodger_blue1]", console=console)
+        logging.info(f"Using prompted path: {input_path}")
     
     console.print(f"\n[bold bright_green]You entered:[/bold bright_green] [bold bright_yellow]{input_path}[/bold bright_yellow]\n")
 
-    output_file = "uncompressed_output.txt"
-    processed_file = "compressed_output.txt"
-    urls_list_file = "processed_urls.txt"
+    output_folder = create_output_folder(input_path)
+    output_file = os.path.join(output_folder, "uncompressed_output.txt")
+    processed_file = os.path.join(output_folder, "compressed_output.txt")
+    urls_list_file = os.path.join(output_folder, "processed_urls.txt")
 
     with Progress(
         TextColumn("[bold bright_blue]{task.description}"),
@@ -690,7 +783,10 @@ def main():
         task = progress.add_task("[bright_blue]Processing...", total=100)
 
         try:
+            logging.info(f"Processing input path: {input_path}")
+            
             if "github.com" in input_path:
+                logging.debug("Detected GitHub URL")
                 if "/pull/" in input_path:
                     final_output = process_github_pull_request(input_path)
                 elif "/issues/" in input_path:
@@ -710,6 +806,7 @@ def main():
             elif input_path.startswith("10.") and "/" in input_path or input_path.isdigit():
                 final_output = process_doi_or_pmid(input_path)
             else:
+                logging.debug("Processing as local folder")
                 final_output = process_local_folder(input_path)
 
             progress.update(task, advance=50)
@@ -717,6 +814,7 @@ def main():
             # Write the uncompressed output
             with open(output_file, "w", encoding="utf-8") as file:
                 file.write(final_output)
+                logging.info(f"Wrote uncompressed output to {output_file}")
 
 
             # Process the compressed output
@@ -738,6 +836,7 @@ def main():
             console.print(f"\n[bright_white]The contents of [bold bright_blue]{output_file}[/bold bright_blue] have been copied to the clipboard.[/bright_white]")
 
         except Exception as e:
+            logging.error(f"Error in main function: {str(e)}")
             console.print(f"\n[bold red]An error occurred:[/bold red] {str(e)}")
             console.print("\nPlease check your input and try again.")
             raise  # Re-raise the exception for debugging purposes

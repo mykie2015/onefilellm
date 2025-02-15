@@ -91,4 +91,9 @@ local_settings.py
 pip-delete-this-directory.txt
 pip-log.txt
 pip-wheel-metadata/
-venv
+.venv
+
+outputs/
+debug.log
+
+
