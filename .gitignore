@@ -93,7 +93,6 @@ pip-log.txt
 pip-wheel-metadata/
 .venv
 
-outputs/
 debug.log
 
 

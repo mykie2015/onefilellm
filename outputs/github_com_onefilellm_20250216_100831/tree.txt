@@ -1,0 +1,9 @@
+github_repository
+├── README.md
+├── architecture.md
+├── onefilellm.py
+├── requirements.txt
+├── test_onefilellm.md
+├── test_onefilellm.py
+├── web_app.py
+└── workflow.md

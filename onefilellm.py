@@ -553,7 +553,7 @@ def process_github_pull_request(pull_request_url):
             formatted_text += f'<review_comment>\n'
             formatted_text += f'<author>{escape_xml(comment["user"]["login"])}</author>\n'
             formatted_text += f'<content>{escape_xml(comment["body"])}</content>\n'
-            formatted_text += f'<path>{escape_xml(comment["path"])}</path>\n'
+            formatted_text += f'<path>{escape_xml(comment["path"])}\n'
             formatted_text += f'<line>{comment["original_line"]}</line>\n'
             formatted_text += '</review_comment>\n'
             comment_index += 1
@@ -608,8 +608,8 @@ def process_github_issue(issue_url):
 
     for comment in comments_data:
         formatted_text += '<comment>\n'
-        formatted_text += f'<author>{escape_xml(comment["user"]["login"])}</author>\n'
-        formatted_text += f'<content>{escape_xml(comment["body"])}</content>\n'
+        formatted_text += f'<author>{escape_xml(comment["user"]["login"])}\n'
+        formatted_text += f'<content>{escape_xml(comment["body"])}\n'
 
         code_snippets = re.findall(r'https://github.com/.*#L\d+-L\d+', comment['body'])
         for snippet_url in code_snippets:
@@ -664,6 +664,9 @@ def is_excluded_file(filename):
         '/mocks/',  # Mock files in a mocks directory
         '.gen.',  # Generated files with .gen. in name
         '_generated.',  # Generated files with _generated in name
+        '.venv/',  # Virtual environment directory
+        '.outputs/',  # Outputs directory
+        '__pycache__',  # Python cache directory
     ]
 
     return any(pattern in filename for pattern in excluded_patterns)
@@ -704,28 +707,36 @@ def is_allowed_filetype(filename):
 
 def create_output_folder(input_path):
     """
-    Create a meaningful output folder name based on input path
+    Create a meaningful output folder name based on input path.
+    For GitHub URLs, use 'github_<owner>_<repo>' when possible.
     """
-    # Create base outputs directory
     outputs_dir = "outputs"
     if not os.path.exists(outputs_dir):
         os.makedirs(outputs_dir)
-    
-    # Create meaningful folder name
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     if os.path.isdir(input_path):
         folder_name = os.path.basename(os.path.abspath(input_path))
     else:
-        # For URLs, use domain name + path hash
         parsed_url = urlparse(input_path)
-        domain = parsed_url.netloc.replace(".", "_")
-        path_hash = hashlib.md5(parsed_url.path.encode()).hexdigest()[:8]
-        folder_name = f"{domain}_{path_hash}"
-    
-    # Create final output path
+        # Use a meaningful name for GitHub retrieval
+        if parsed_url.scheme in ["http", "https"] and "github.com" in parsed_url.netloc:
+            path_parts = parsed_url.path.strip("/").split("/")
+            if len(path_parts) >= 2:
+                folder_name = f"github_{path_parts[0]}_{path_parts[1]}"
+            else:
+                folder_name = "github_unknown"
+        elif parsed_url.scheme in ["http", "https"]:
+            domain = parsed_url.netloc.replace(".", "_")
+            path_hash = hashlib.md5(parsed_url.path.encode()).hexdigest()[:8]
+            folder_name = f"{domain}_{path_hash}"
+        else:
+            # Fallback for non-URL inputs
+            folder_name = input_path.replace(" ", "_")
+
     output_folder = os.path.join(outputs_dir, f"{folder_name}_{timestamp}")
     os.makedirs(output_folder)
-    
     return output_folder
 
 def main():
