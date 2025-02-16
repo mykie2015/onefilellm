@@ -36,7 +36,9 @@ logging.basicConfig(
     ]
 )
 
-EXCLUDED_DIRS = ["dist", "node_modules", ".git", "__pycache__"]  # Add any other directories to exclude here
+# EXCLUDED_DIRS = ["dist", "node_modules", ".git", "__pycache__"]  # Add any other directories to exclude here
+EXCLUDED_DIRS = ["dist", "node_modules", ".git", "__pycache__", ".venv", "outputs"]  # Add any other directories to exclude here
+
 
 def safe_file_read(filepath, fallback_encoding='latin1'):
     try:
@@ -196,6 +198,7 @@ def process_local_folder(local_path):
                 
                 # Exclude directories
                 dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+
                 logging.debug(f"After exclusion, processing directories: {dirs}")
 
                 for file in files:
@@ -664,9 +667,6 @@ def is_excluded_file(filename):
         '/mocks/',  # Mock files in a mocks directory
         '.gen.',  # Generated files with .gen. in name
         '_generated.',  # Generated files with _generated in name
-        '.venv/',  # Virtual environment directory
-        '.outputs/',  # Outputs directory
-        '__pycache__',  # Python cache directory
     ]
 
     return any(pattern in filename for pattern in excluded_patterns)
